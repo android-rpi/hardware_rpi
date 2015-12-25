@@ -19,7 +19,8 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := audio.primary.$(TARGET_PRODUCT)
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := audio_hw.c
-LOCAL_SHARED_LIBRARIES := liblog libcutils
+LOCAL_C_INCLUDES += external/tinyalsa/include
+LOCAL_SHARED_LIBRARIES := liblog libcutils libtinyalsa
 LOCAL_MODULE_TAGS := optional
 LOCAL_CFLAGS := -Wno-unused-parameter
 
