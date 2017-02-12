@@ -6,7 +6,7 @@ LOCAL_MODULE := gralloc.$(TARGET_PRODUCT)
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
 
-LOCAL_SRC_FILES := gralloc_rpi.cpp
+LOCAL_SRC_FILES := gralloc_rpi.cpp gralloc_fb.cpp
 
 LOCAL_C_INCLUDES := \
 	external/drm_gralloc \
