@@ -13,6 +13,8 @@
 #include <gralloc_drm.h>
 #include <gralloc_drm_priv.h>
 
+int gralloc_drm_bo_add_fb(struct gralloc_drm_bo_t *bo);
+
 static int drm_init(const struct drm_gralloc1_module_t *cmod) {
 	struct drm_gralloc1_module_t *mod = (struct drm_gralloc1_module_t *) cmod;
 	int err = 0;
@@ -77,7 +79,7 @@ static int drm_alloc(const struct drm_gralloc1_module_t *mod, int w, int h, int 
 	if (!bpp) return -EINVAL;
 	bo = gralloc_drm_bo_create(mod->drm, w, h, format, usage);
 	if (!bo) return -ENOMEM;
-	if (gralloc_drm_bo_need_fb(bo)) {
+	if (bo->handle->usage & GRALLOC_USAGE_HW_FB) {
 		err = gralloc_drm_bo_add_fb(bo);
 		if (err) {
 			ALOGE("failed to add fb");
@@ -465,30 +467,6 @@ static int drm_mod_perform(const struct drm_gralloc1_module_t *mod, int op, ...)
 			err = 0;
 		}
 		break;
-	/* should we remove this and next ops, and make it transparent? */
-	case GRALLOC_MODULE_PERFORM_GET_DRM_MAGIC:
-		{
-			int32_t *magic = va_arg(args, int32_t *);
-			err = gralloc_drm_get_magic(dmod->drm, magic);
-		}
-		break;
-	case GRALLOC_MODULE_PERFORM_AUTH_DRM_MAGIC:
-		{
-			int32_t magic = va_arg(args, int32_t);
-			err = gralloc_drm_auth_magic(dmod->drm, magic);
-		}
-		break;
-	case GRALLOC_MODULE_PERFORM_ENTER_VT:
-		{
-			err = gralloc_drm_set_master(dmod->drm);
-		}
-		break;
-	case GRALLOC_MODULE_PERFORM_LEAVE_VT:
-		{
-			gralloc_drm_drop_master(dmod->drm);
-			err = 0;
-		}
-		break;
 	default:
 		err = -EINVAL;
 		break;
@@ -497,8 +475,6 @@ static int drm_mod_perform(const struct drm_gralloc1_module_t *mod, int op, ...)
 
 	return err;
 }
-
-int drm_mod_open_fb0(struct drm_gralloc1_module_t *dmod, struct hw_device_t **dev);
 
 static int gralloc1_device_open(const struct hw_module_t *module,
 		const char *name, struct hw_device_t **device)
@@ -509,9 +485,6 @@ static int gralloc1_device_open(const struct hw_module_t *module,
 	      android::GrallocImpl *dev = new android::GrallocImpl(m);
 	      *device = reinterpret_cast<hw_device_t *>(dev);
 	      status = 0;
-	  } else if (strcmp(name, GRALLOC_HARDWARE_FB0) == 0) {
-		  struct drm_gralloc1_module_t *dmod = (struct drm_gralloc1_module_t *) module;
-		  status = drm_mod_open_fb0(dmod, device);
 	  }
 	  return status;
 }

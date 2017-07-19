@@ -17,10 +17,19 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_RELATIVE_PATH := hw
-LOCAL_SHARED_LIBRARIES := liblog libEGL libhardware libutils libdrm
-LOCAL_CFLAGS := -DEGL_EGLEXT_PROTOTYPES -DLOG_TAG=\"hwcomposer\"
-LOCAL_C_INCLUDES += system/core/include/utils/ external/drm_gralloc external/libdrm external/libdrm/include/drm
+
+LOCAL_SHARED_LIBRARIES := liblog libEGL libhardware libutils libdrm \
+                          libgralloc_drm libgralloc_kms
+
+LOCAL_CFLAGS := -DEGL_EGLEXT_PROTOTYPES -DLOG_TAG=\"hwcomposer\" \
+                -Wno-gnu-designator
+
+LOCAL_C_INCLUDES += system/core/include/utils/ external/drm_gralloc \
+                    external/libdrm external/libdrm/include/drm
+
 LOCAL_SRC_FILES := hwcomposer.cpp
+
 LOCAL_MODULE := hwcomposer.$(TARGET_PRODUCT)
 LOCAL_MODULE_TAGS := optional
+
 include $(BUILD_SHARED_LIBRARY)

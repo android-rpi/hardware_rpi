@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+#define LOG_TAG "hwcomposer"
+#include <cutils/log.h>
+#include <cutils/atomic.h>
+
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
 #include <hardware/gralloc.h>
@@ -25,15 +29,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include <cutils/log.h>
-#include <cutils/atomic.h>
-
-#include <hardware/hwcomposer.h>
-
 #include <EGL/egl.h>
-
-#define LOG_TAG "hwcomposer"
-
 #include <Condition.h>
 #include <Mutex.h>
 #include <Thread.h>
@@ -54,7 +50,7 @@ hwc_module_t HAL_MODULE_INFO_SYM = {
 		version_major: 1,
 		version_minor: 0,
 		id: HWC_HARDWARE_MODULE_ID,
-		name: "Intel hwcomposer module",
+		name: "rpi hwcomposer module",
 		author: "Intel",
 		methods: &hwc_module_methods,
 		dso: NULL,
@@ -84,6 +80,7 @@ private:
 	android::Condition condition;
 	bool enabled;
 	mutable int64_t next_fake_vsync;
+public:
 	int64_t refresh_period;
 };
 
@@ -119,30 +116,28 @@ static int hwc_event_control(hwc_composer_device_1 *dev, int disp, int event,
 	return 0;
 }
 
-static int hwc_prepare(hwc_composer_device_1 *dev, size_t numDisplays,
-	hwc_display_contents_1_t** displays)
+static int hwc_prepare(hwc_composer_device_1 */*dev*/, size_t /*numDisplays*/,
+		       hwc_display_contents_1_t** /*displays*/)
 {
-	struct hwc_context_t* ctx = (struct hwc_context_t *) &dev->common;
-
-	// SurfaceFlinger wants to handle the complete composition
-	if (displays[0]->numHwLayers == 0)
-		return 0;
-
-	int topmost = displays[0]->numHwLayers;
-	if (displays[0]->numHwLayers > 0)
-		topmost--;
-
-	if (displays[0]->hwLayers->flags & HWC_GEOMETRY_CHANGED) {
-		for (int i=topmost; i>=0; i--) {
-			displays[0]->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
-		}
-	}
 	return 0;
 }
 
 
+int gralloc_drm_bo_post(struct gralloc_drm_bo_t *bo);
+
+static int hwc_post_fb0(buffer_handle_t handle)
+{
+	struct gralloc_drm_bo_t *bo;
+
+	bo = gralloc_drm_bo_from_handle(handle);
+	if (!bo)
+		return -EINVAL;
+
+	return gralloc_drm_bo_post(bo);
+}
+
 static int hwc_set(hwc_composer_device_1 *dev,
-		size_t numDisplays, hwc_display_contents_1_t** displays)
+		size_t /*numDisplays*/, hwc_display_contents_1_t** displays)
 {
 	struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
 	EGLBoolean success;
@@ -151,24 +146,27 @@ static int hwc_set(hwc_composer_device_1 *dev,
 	if (!displays[0]->dpy)
 		return 0;
 
-	success = eglSwapBuffers((EGLDisplay)displays[0]->dpy,
-		(EGLSurface)displays[0]->sur);
-
-	if (!success)
-		return HWC_EGL_ERROR;
+	size_t i = 0;
+	for (i=0; i< displays[0]->numHwLayers; i++) {
+		if (displays[0]->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
+			hwc_post_fb0(displays[0]->hwLayers[i].handle);
+			displays[0]->hwLayers[i].releaseFenceFd = -1;
+		}
+	}
+	displays[0]->retireFenceFd = -1;
 
 	return 0;
 }
 
 // toggle display on or off
-static int hwc_blank(struct hwc_composer_device_1* dev, int disp, int blank)
+static int hwc_blank(struct hwc_composer_device_1* /*dev*/, int /*disp*/, int /*blank*/)
 {
 	// dummy implementation for now
 	return 0;
 }
 
 // query number of different configurations available on display
-static int hwc_get_display_cfgs(struct hwc_composer_device_1* dev, int disp,
+static int hwc_get_display_cfgs(struct hwc_composer_device_1* /*dev*/, int /*disp*/,
 	uint32_t* configs, size_t* numConfigs)
 {
 	// support just one config per display for now
@@ -180,7 +178,7 @@ static int hwc_get_display_cfgs(struct hwc_composer_device_1* dev, int disp,
 
 // query display attributes for a particular config
 static int hwc_get_display_attrs(struct hwc_composer_device_1* dev, int disp,
-	uint32_t config, const uint32_t* attributes, int32_t* values)
+	uint32_t /*config*/, const uint32_t* attributes, int32_t* values)
 {
 	int attr = 0;
 	struct hwc_context_t* ctx = (struct hwc_context_t *) &dev->common;
@@ -192,9 +190,9 @@ static int hwc_get_display_attrs(struct hwc_composer_device_1* dev, int disp,
 		return -EINVAL;
 
 	while(attributes[attr] != HWC_DISPLAY_NO_ATTRIBUTE) {
-		switch (attr) {
+		switch (attributes[attr]) {
 			case HWC_DISPLAY_VSYNC_PERIOD:
-				values[attr] = drm->primary.mode.vrefresh;
+				values[attr] = (int32_t)(ctx->vsync_thread->refresh_period);
 				break;
 			case HWC_DISPLAY_WIDTH:
 				values[attr] = drm->primary.mode.hdisplay;
@@ -203,10 +201,10 @@ static int hwc_get_display_attrs(struct hwc_composer_device_1* dev, int disp,
 				values[attr] = drm->primary.mode.vdisplay;
 				break;
 			case HWC_DISPLAY_DPI_X:
-				values[attr] = drm->primary.xdpi;
+				values[attr] = drm->primary.xdpi * 1000;
 				break;
 			case HWC_DISPLAY_DPI_Y:
-				values[attr] = drm->primary.ydpi;
+				values[attr] = drm->primary.ydpi * 1000;
 				break;
 		}
 		attr++;
@@ -227,6 +225,22 @@ static int hwc_device_close(struct hw_device_t *dev)
 	return 0;
 }
 
+int gralloc_drm_init_kms(struct gralloc_drm_t *drm);
+
+static int hwc_init_kms(struct drm_gralloc1_module_t *mod) {
+	int err = 0;
+	pthread_mutex_lock(&mod->mutex);
+	if (!mod->drm) {
+		mod->drm = gralloc_drm_create();
+		if (!mod->drm)
+			err = -EINVAL;
+	}
+	if (!err)
+		err = gralloc_drm_init_kms(mod->drm);
+	pthread_mutex_unlock(&mod->mutex);
+	return err;
+}
+
 /*****************************************************************************/
 
 static int hwc_device_open(const struct hw_module_t* module, const char* name,
@@ -241,7 +255,7 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
 
 	/* initialize the procs */
 	dev->device.common.tag = HARDWARE_DEVICE_TAG;
-	dev->device.common.version = HWC_DEVICE_API_VERSION_1_0;
+	dev->device.common.version = HWC_DEVICE_API_VERSION_1_1;
 	dev->device.common.module = const_cast<hw_module_t*>(module);
 	dev->device.common.close = hwc_device_close;
 
@@ -260,11 +274,17 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
 		return -errno;
 	}
 
+	err = hwc_init_kms(dev->gralloc_module);
+	if (err != 0) {
+		ALOGE("failed hwc_init_kms() %d", err);
+		return err;
+	}
+
 	*device = &dev->device.common;
 
 	dev->vsync_thread = new vsync_worker(*dev);
 
-	ALOGD("Intel hwcomposer module");
+	ALOGD("rpi hwcomposer module");
 
 	return 0;
 }
@@ -281,22 +301,8 @@ extern "C" int clock_nanosleep(clockid_t clock_id, int flags,
 vsync_worker::vsync_worker(struct hwc_context_t& mydev)
 	: dev(mydev), enabled(false), next_fake_vsync(0)
 {
-	int64_t refresh = 0;
-	framebuffer_device_t*	fbdev;
-
-	int err = framebuffer_open((const hw_module_t *)dev.gralloc_module, &fbdev);
-	if (err)
-		ALOGE("framebuffer_open failed (%s)", strerror(-err));
-	else
-		refresh = int64_t(SEC_TO_NANOSEC / fbdev->fps);
-
-	if (refresh == 0) {
-		refresh = int64_t(SEC_TO_NANOSEC / 60.0);
-		ALOGW("getting VSYNC period from thin air: %lld", refresh);
-	} else
-		ALOGW("getting VSYNC period from fb HAL: %lld", refresh);
-
-	refresh_period = refresh;
+	refresh_period = int64_t(SEC_TO_NANOSEC / 60.0);
+	ALOGW("getting VSYNC period from thin air: %lld", refresh_period);
 }
 
 void vsync_worker::set_enabled(bool _enabled)
