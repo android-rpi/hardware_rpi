@@ -1,105 +1,15 @@
 #undef LOG_TAG
-#define LOG_TAG "GRALLOC-RPI"
+#define LOG_TAG "Gralloc1Device"
 //#define LOG_NDEBUG 0
 #include <utils/Log.h>
 #include <inttypes.h>
 
-#include <string.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <pthread.h>
-#include <errno.h>
-
-#include <gralloc_drm.h>
-#include <gralloc_drm_priv.h>
-
-int gralloc_drm_bo_add_fb(struct gralloc_drm_bo_t *bo);
-
-static int drm_init(const struct drm_gralloc1_module_t *cmod) {
-	struct drm_gralloc1_module_t *mod = (struct drm_gralloc1_module_t *) cmod;
-	int err = 0;
-	pthread_mutex_lock(&mod->mutex);
-	if (!mod->drm) {
-		mod->drm = gralloc_drm_create();
-		if (!mod->drm)
-			err = -EINVAL;
-	}
-	pthread_mutex_unlock(&mod->mutex);
-	return err;
-}
-
-static void drm_deinit(const struct drm_gralloc1_module_t *mod) {
-	gralloc_drm_destroy(mod->drm);
-}
-
-static int drm_register(const struct drm_gralloc1_module_t *mod, buffer_handle_t handle) {
-	int err;
-	err = drm_init(mod);
-	if (err)
-		return err;
-	return gralloc_drm_handle_register(handle, mod->drm);
-}
-
-static int drm_unregister(buffer_handle_t handle) {
-	return gralloc_drm_handle_unregister(handle);
-}
-
-static int drm_lock(buffer_handle_t handle, int usage, int x, int y, int w, int h, void **ptr) {
-	struct gralloc_drm_bo_t *bo;
-	int err;
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
-	return gralloc_drm_bo_lock(bo, usage, x, y, w, h, ptr);
-}
-
-static int drm_unlock(buffer_handle_t handle) {
-	struct gralloc_drm_bo_t *bo;
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
-	gralloc_drm_bo_unlock(bo);
-	return 0;
-}
-
-static int drm_free(buffer_handle_t handle) {
-	struct gralloc_drm_bo_t *bo;
-	bo = gralloc_drm_bo_from_handle(handle);
-	if (!bo)
-		return -EINVAL;
-	gralloc_drm_bo_decref(bo);
-	return 0;
-}
-
-static int drm_alloc(const struct drm_gralloc1_module_t *mod, int w, int h, int format, int usage,
-		buffer_handle_t *handle, int *stride) {
-	struct gralloc_drm_bo_t *bo;
-	int size, bpp, err;
-	bpp = gralloc_drm_get_bpp(format);
-	if (!bpp) return -EINVAL;
-	bo = gralloc_drm_bo_create(mod->drm, w, h, format, usage);
-	if (!bo) return -ENOMEM;
-	if (bo->handle->usage & GRALLOC_USAGE_HW_FB) {
-		err = gralloc_drm_bo_add_fb(bo);
-		if (err) {
-			ALOGE("failed to add fb");
-			gralloc_drm_bo_decref(bo);
-			return err;
-		}
-	}
-	*handle = gralloc_drm_bo_get_handle(bo, stride);
-	/* in pixels */
-	*stride /= bpp;
-	return 0;
-}
-
-
-#include <hardware/gralloc1.h>
-#include "gralloc_rpi.h"
+#include "gralloc1_rpi.h"
+#include "Gralloc1Device.h"
 
 namespace android {
 
-GrallocImpl::GrallocImpl(const struct drm_gralloc1_module_t *module) {
+Gralloc1Device::Gralloc1Device(const struct drm_gralloc1_module_t *module) {
     ALOGV("Constructing");
 	common.tag = HARDWARE_DEVICE_TAG;
 	common.version = 1;
@@ -115,18 +25,18 @@ GrallocImpl::GrallocImpl(const struct drm_gralloc1_module_t *module) {
     }
 }
 
-GrallocImpl::~GrallocImpl() {
+Gralloc1Device::~Gralloc1Device() {
 	if (mModule != nullptr) {
 		drm_deinit(mModule);
 	}
 }
 
-int GrallocImpl::CloseDevice(hw_device_t *device) {
+int Gralloc1Device::CloseDevice(hw_device_t *device) {
 	delete getImpl(device);
 	return 0;
 }
 
-void GrallocImpl::GetCapabilities(struct gralloc1_device */*device*/, uint32_t *outCount,
+void Gralloc1Device::GetCapabilities(struct gralloc1_device */*device*/, uint32_t *outCount,
                                   int32_t /*gralloc1_capability_t*/ *outCapabilities) {
 	if (outCapabilities == nullptr) {
 		*outCount = 1;
@@ -139,7 +49,7 @@ void GrallocImpl::GetCapabilities(struct gralloc1_device */*device*/, uint32_t *
   return;
 }
 
-gralloc1_function_pointer_t GrallocImpl::GetFunction(gralloc1_device_t *device, int32_t function) {
+gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *device, int32_t function) {
     if (!device) {
         ALOGE("NULL gralloc1_device_t");
 	    return nullptr;
@@ -199,10 +109,10 @@ gralloc1_function_pointer_t GrallocImpl::GetFunction(gralloc1_device_t *device, 
             }*/
         case GRALLOC1_FUNCTION_RETAIN:
             return reinterpret_cast<gralloc1_function_pointer_t>(
-                    managementHook<&GrallocImpl::retain>);
+                    managementHook<&Gralloc1Device::retain>);
         case GRALLOC1_FUNCTION_RELEASE:
             return reinterpret_cast<gralloc1_function_pointer_t>(
-                    managementHook<&GrallocImpl::release>);
+                    managementHook<&Gralloc1Device::release>);
         case GRALLOC1_FUNCTION_RETAIN_GRAPHIC_BUFFER:
             return reinterpret_cast<gralloc1_function_pointer_t>(RetainGraphicBuffer);
         case GRALLOC1_FUNCTION_GET_NUM_FLEX_PLANES:
@@ -211,15 +121,15 @@ gralloc1_function_pointer_t GrallocImpl::GetFunction(gralloc1_device_t *device, 
                     &Buffer::getNumFlexPlanes, uint32_t*>);
         case GRALLOC1_FUNCTION_LOCK:
             return reinterpret_cast<gralloc1_function_pointer_t>(
-                    lockHook<void*, &GrallocImpl::lock>);
+                    lockHook<void*, &Gralloc1Device::lock>);
         case GRALLOC1_FUNCTION_LOCK_FLEX:
             return reinterpret_cast<gralloc1_function_pointer_t>(
                     lockHook<struct android_flex_layout,
-                    &GrallocImpl::lockFlex>);
+                    &Gralloc1Device::lockFlex>);
         case GRALLOC1_FUNCTION_LOCK_YCBCR:
             return reinterpret_cast<gralloc1_function_pointer_t>(
                     lockHook<struct android_ycbcr,
-                    &GrallocImpl::lockYCbCr>);
+                    &Gralloc1Device::lockYCbCr>);
         case GRALLOC1_FUNCTION_UNLOCK:
             return reinterpret_cast<gralloc1_function_pointer_t>(Unlock);
         case GRALLOC1_FUNCTION_INVALID:
@@ -231,7 +141,7 @@ gralloc1_function_pointer_t GrallocImpl::GetFunction(gralloc1_device_t *device, 
     return nullptr;
 }
 
-gralloc1_error_t GrallocImpl::AllocateWithId(
+gralloc1_error_t Gralloc1Device::AllocateWithId(
         gralloc1_device_t* device, gralloc1_buffer_descriptor_t descriptorId,
         gralloc1_backing_store_t store, buffer_handle_t* outBuffer)
 {
@@ -251,7 +161,7 @@ gralloc1_error_t GrallocImpl::AllocateWithId(
 }
 
 
-gralloc1_error_t GrallocImpl::createDescriptor(gralloc1_buffer_descriptor_t* outDescriptor) {
+gralloc1_error_t Gralloc1Device::createDescriptor(gralloc1_buffer_descriptor_t* outDescriptor) {
     auto descriptorId = sNextBufferDescriptorId++;
     std::lock_guard<std::mutex> lock(mDescriptorMutex);
     mDescriptors.emplace(descriptorId,
@@ -263,7 +173,7 @@ gralloc1_error_t GrallocImpl::createDescriptor(gralloc1_buffer_descriptor_t* out
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::destroyDescriptor(gralloc1_buffer_descriptor_t descriptor) {
+gralloc1_error_t Gralloc1Device::destroyDescriptor(gralloc1_buffer_descriptor_t descriptor) {
     ALOGV("Destroying descriptor %" PRIu64, descriptor);
 
     std::lock_guard<std::mutex> lock(mDescriptorMutex);
@@ -275,7 +185,7 @@ gralloc1_error_t GrallocImpl::destroyDescriptor(gralloc1_buffer_descriptor_t des
     return GRALLOC1_ERROR_NONE;
 }
 
-GrallocImpl::Buffer::Buffer(buffer_handle_t handle,
+Gralloc1Device::Buffer::Buffer(buffer_handle_t handle,
         gralloc1_backing_store_t store, const Descriptor& descriptor,
         uint32_t stride, bool wasAllocated)
   : mHandle(handle),
@@ -285,7 +195,7 @@ GrallocImpl::Buffer::Buffer(buffer_handle_t handle,
     mStride(stride),
     mWasAllocated(wasAllocated) {}
 
-gralloc1_error_t GrallocImpl::allocate(const std::shared_ptr<Descriptor>& descriptor,
+gralloc1_error_t Gralloc1Device::allocate(const std::shared_ptr<Descriptor>& descriptor,
         gralloc1_backing_store_t store, buffer_handle_t* outBufferHandle) {
     ALOGV("allocate(%" PRIu64 ", %#" PRIx64 ")", descriptor->id, store);
 
@@ -318,12 +228,12 @@ gralloc1_error_t GrallocImpl::allocate(const std::shared_ptr<Descriptor>& descri
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::retain(const std::shared_ptr<Buffer>& buffer) {
+gralloc1_error_t Gralloc1Device::retain(const std::shared_ptr<Buffer>& buffer) {
     buffer->retain();
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::release(const std::shared_ptr<Buffer>& buffer) {
+gralloc1_error_t Gralloc1Device::release(const std::shared_ptr<Buffer>& buffer) {
     if (!buffer->release()) {
         return GRALLOC1_ERROR_NONE;
     }
@@ -348,7 +258,7 @@ gralloc1_error_t GrallocImpl::release(const std::shared_ptr<Buffer>& buffer) {
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::retain(const android::GraphicBuffer* graphicBuffer) {
+gralloc1_error_t Gralloc1Device::retain(const android::GraphicBuffer* graphicBuffer) {
     ALOGV("retainGraphicBuffer(%p, %#" PRIx64 ")",
             graphicBuffer->getNativeBuffer()->handle, graphicBuffer->getId());
 
@@ -381,7 +291,7 @@ gralloc1_error_t GrallocImpl::retain(const android::GraphicBuffer* graphicBuffer
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::lock(const std::shared_ptr<Buffer>& buffer,
+gralloc1_error_t Gralloc1Device::lock(const std::shared_ptr<Buffer>& buffer,
         gralloc1_producer_usage_t producerUsage, gralloc1_consumer_usage_t consumerUsage,
         const gralloc1_rect_t& accessRegion, void** outData, const sp<Fence>& acquireFence) {
         acquireFence->waitForever("Gralloc1On0Adapter::lock");
@@ -396,7 +306,7 @@ gralloc1_error_t GrallocImpl::lock(const std::shared_ptr<Buffer>& buffer,
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t GrallocImpl::lockFlex(
+gralloc1_error_t Gralloc1Device::lockFlex(
         const std::shared_ptr<Buffer>& /*buffer*/,
         gralloc1_producer_usage_t /*producerUsage*/,
         gralloc1_consumer_usage_t /*consumerUsage*/,
@@ -405,7 +315,7 @@ gralloc1_error_t GrallocImpl::lockFlex(
         const sp<Fence>& /*acquireFence*/) {
     return GRALLOC1_ERROR_UNSUPPORTED;
 }
-gralloc1_error_t GrallocImpl::lockYCbCr(
+gralloc1_error_t Gralloc1Device::lockYCbCr(
         const std::shared_ptr<Buffer>& /*buffer*/,
         gralloc1_producer_usage_t /*producerUsage*/,
         gralloc1_consumer_usage_t /*consumerUsage*/,
@@ -415,7 +325,7 @@ gralloc1_error_t GrallocImpl::lockYCbCr(
     return GRALLOC1_ERROR_UNSUPPORTED;
 }
 
-gralloc1_error_t GrallocImpl::unlock(
+gralloc1_error_t Gralloc1Device::unlock(
         const std::shared_ptr<Buffer>& buffer,
         sp<Fence>* /*outReleaseFence*/)
 {
@@ -426,7 +336,7 @@ gralloc1_error_t GrallocImpl::unlock(
     return GRALLOC1_ERROR_NONE;
 }
 
-std::shared_ptr<GrallocImpl::Descriptor> GrallocImpl::getDescriptor(
+std::shared_ptr<Gralloc1Device::Descriptor> Gralloc1Device::getDescriptor(
         gralloc1_buffer_descriptor_t descriptor) {
     std::lock_guard<std::mutex> lock(mDescriptorMutex);
     if (mDescriptors.count(descriptor) == 0) {
@@ -435,7 +345,7 @@ std::shared_ptr<GrallocImpl::Descriptor> GrallocImpl::getDescriptor(
     return mDescriptors[descriptor];
 }
 
-std::shared_ptr<GrallocImpl::Buffer> GrallocImpl::getBuffer(buffer_handle_t bufferHandle) {
+std::shared_ptr<Gralloc1Device::Buffer> Gralloc1Device::getBuffer(buffer_handle_t bufferHandle) {
     std::lock_guard<std::mutex> lock(mBufferMutex);
     if (mBuffers.count(bufferHandle) == 0) {
         return nullptr;
@@ -443,67 +353,6 @@ std::shared_ptr<GrallocImpl::Buffer> GrallocImpl::getBuffer(buffer_handle_t buff
     return mBuffers[bufferHandle];
 }
 
-std::atomic<gralloc1_buffer_descriptor_t> GrallocImpl::sNextBufferDescriptorId(1);
+std::atomic<gralloc1_buffer_descriptor_t> Gralloc1Device::sNextBufferDescriptorId(1);
 
 } // namespace android
-
-
-static int drm_mod_perform(const struct drm_gralloc1_module_t *mod, int op, ...)
-{
-	struct drm_gralloc1_module_t *dmod = (struct drm_gralloc1_module_t *) mod;
-	va_list args;
-	int err;
-
-	err = drm_init(dmod);
-	if (err)
-		return err;
-
-	va_start(args, op);
-	switch (op) {
-	case GRALLOC_MODULE_PERFORM_GET_DRM_FD:
-		{
-			int *fd = va_arg(args, int *);
-			*fd = gralloc_drm_get_fd(dmod->drm);
-			err = 0;
-		}
-		break;
-	default:
-		err = -EINVAL;
-		break;
-	}
-	va_end(args);
-
-	return err;
-}
-
-static int gralloc1_device_open(const struct hw_module_t *module,
-		const char *name, struct hw_device_t **device)
-{
-	  int status = -EINVAL;
-	  if (!strcmp(name, GRALLOC_HARDWARE_MODULE_ID)) {
-	      const struct drm_gralloc1_module_t *m = reinterpret_cast<const struct drm_gralloc1_module_t *>(module);
-	      android::GrallocImpl *dev = new android::GrallocImpl(m);
-	      *device = reinterpret_cast<hw_device_t *>(dev);
-	      status = 0;
-	  }
-	  return status;
-}
-
-static struct hw_module_methods_t private_module_methods = {
-	.open = gralloc1_device_open
-};
-
-struct drm_gralloc1_module_t HAL_MODULE_INFO_SYM = {
-	.common = {
-		.tag = HARDWARE_MODULE_TAG,
-		.version_major = 0x100,
-		.version_minor = 0,
-		.id = GRALLOC_HARDWARE_MODULE_ID,
-		.name = "RPi Graphics Memory Allocator",
-		.author = "Peter Yoon",
-		.methods = &private_module_methods
-	},
-	.perform = drm_mod_perform,
-	.mutex = PTHREAD_MUTEX_INITIALIZER,
-	.drm = NULL
-};

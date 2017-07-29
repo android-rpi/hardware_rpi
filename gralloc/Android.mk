@@ -2,11 +2,11 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := gralloc.$(TARGET_PRODUCT)
+LOCAL_MODULE := gralloc.rpi3
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
 
-LOCAL_SRC_FILES := gralloc_rpi.cpp
+LOCAL_SRC_FILES := Gralloc1Device.cpp gralloc1_rpi.cpp
 
 LOCAL_C_INCLUDES := \
 	external/drm_gralloc \

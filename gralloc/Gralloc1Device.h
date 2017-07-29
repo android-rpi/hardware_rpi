@@ -1,5 +1,5 @@
-#ifndef _GRALLOC_RPI_H_
-#define _GRALLOC_RPI_H_
+#ifndef _GRALLOC1_DEVICE_H_
+#define _GRALLOC1_DEVICE_H_
 
 #include <ui/Fence.h>
 #include <ui/GraphicBuffer.h>
@@ -21,13 +21,13 @@ static const auto GRALLOC1_LAST_ADAPTER_FUNCTION = GRALLOC1_FUNCTION_LOCK_YCBCR;
 
 namespace android {
 
-#define getImpl(exp) reinterpret_cast<GrallocImpl *>(exp)
+#define getImpl(exp) reinterpret_cast<Gralloc1Device *>(exp)
 
-class GrallocImpl : public gralloc1_device_t
+class Gralloc1Device : public gralloc1_device_t
 {
 public:
-	GrallocImpl(const struct drm_gralloc1_module_t* module);
-	~GrallocImpl();
+	Gralloc1Device(const struct drm_gralloc1_module_t* module);
+	~Gralloc1Device();
 
 private:
 	struct Descriptor;
@@ -130,7 +130,7 @@ private:
             sp<Fence>* outReleaseFence);
 
     struct Descriptor : public std::enable_shared_from_this<Descriptor> {
-        Descriptor(GrallocImpl* impl,
+        Descriptor(Gralloc1Device* impl,
         		gralloc1_buffer_descriptor_t id)
           : impl(impl),
             id(id),
@@ -161,7 +161,7 @@ private:
             return GRALLOC1_ERROR_NONE;
         }
 
-        GrallocImpl* const impl;
+        Gralloc1Device* const impl;
         const gralloc1_buffer_descriptor_t id;
 
         uint32_t width;
@@ -268,11 +268,11 @@ private:
     template <typename MF, MF memFunc, typename ...Args>
     static gralloc1_error_t bufferHook(gralloc1_device_t* device,
             buffer_handle_t bufferHandle, Args... args) {
-        return GrallocImpl::callBufferFunction(device, bufferHandle,
+        return Gralloc1Device::callBufferFunction(device, bufferHandle,
                 memFunc, std::forward<Args>(args)...);
     }
 
-    template <gralloc1_error_t (GrallocImpl::*member)(
+    template <gralloc1_error_t (Gralloc1Device::*member)(
             const std::shared_ptr<Buffer>& buffer)>
     static gralloc1_error_t managementHook(gralloc1_device_t* device,
             buffer_handle_t bufferHandle) {
@@ -284,7 +284,7 @@ private:
         return ((*impl).*member)(buffer);
     }
 
-    template <typename OUT, gralloc1_error_t (GrallocImpl::*member)(
+    template <typename OUT, gralloc1_error_t (Gralloc1Device::*member)(
             const std::shared_ptr<Buffer>&, gralloc1_producer_usage_t,
             gralloc1_consumer_usage_t, const gralloc1_rect_t&, OUT*,
             const sp<Fence>&)>
@@ -355,4 +355,4 @@ private:
 
 } // namespace android
 
-#endif /* _GRALLOC_RPI_H_ */
+#endif /* _GRALLOC1_DEVICE_H_ */
