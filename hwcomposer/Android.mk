@@ -1,4 +1,4 @@
-# Copyright (C) 2008 The Android Open Source Project
+# Copyright (C) 2017 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,24 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 LOCAL_PATH := $(call my-dir)
+
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_RELATIVE_PATH := hw
 
 LOCAL_SHARED_LIBRARIES := liblog libEGL libhardware libutils libdrm \
-                          libgralloc_drm libgralloc_kms
-
-LOCAL_CFLAGS := -DEGL_EGLEXT_PROTOTYPES -DLOG_TAG=\"hwcomposer\" \
-                -Wno-gnu-designator
+                          libgralloc_drm libgralloc_kms libui
 
 LOCAL_C_INCLUDES += system/core/include/utils/ external/drm_gralloc \
                     external/libdrm external/libdrm/include/drm
 
-LOCAL_SRC_FILES := hwcomposer.cpp
+LOCAL_SRC_FILES := Hwc2Device.cpp hwc2_rpi.cpp
 
-LOCAL_MODULE := hwcomposer.$(TARGET_PRODUCT)
+LOCAL_MODULE := hwcomposer.rpi3
 LOCAL_MODULE_TAGS := optional
 
 include $(BUILD_SHARED_LIBRARY)
