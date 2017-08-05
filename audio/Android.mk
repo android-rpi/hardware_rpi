@@ -16,7 +16,7 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := audio.primary.$(TARGET_PRODUCT)
+LOCAL_MODULE := audio.primary.rpi3
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := audio_hw.c
 LOCAL_C_INCLUDES += external/tinyalsa/include
