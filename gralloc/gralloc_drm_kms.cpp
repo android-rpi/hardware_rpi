@@ -387,8 +387,13 @@ int gralloc_drm_bo_post(struct gralloc_drm_bo_t *bo)
 	int ret;
 
 	if (!bo->fb_id) {
-		ALOGE("unable to post bo %p without fb", bo);
-		return -EINVAL;
+		int err = gralloc_drm_bo_add_fb(bo);
+		if (err) {
+			ALOGE("%s: could not create drm fb, (%s)",
+				__func__, strerror(-err));
+			ALOGE("unable to post bo %p without fb", bo);
+			return err;
+		}
 	}
 
 	/* TODO spawn a thread to avoid waiting and race */

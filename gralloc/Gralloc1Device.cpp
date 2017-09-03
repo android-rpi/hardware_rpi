@@ -7,6 +7,8 @@
 #include "gralloc1_rpi.h"
 #include "Gralloc1Device.h"
 
+#include <grallocusage/GrallocUsageConversion.h>
+
 namespace android {
 
 Gralloc1Device::Gralloc1Device(const struct drm_gralloc1_module_t *module) {
@@ -37,16 +39,8 @@ int Gralloc1Device::CloseDevice(hw_device_t *device) {
 }
 
 void Gralloc1Device::GetCapabilities(struct gralloc1_device */*device*/, uint32_t *outCount,
-                                  int32_t /*gralloc1_capability_t*/ *outCapabilities) {
-	if (outCapabilities == nullptr) {
-		*outCount = 1;
-		return;
-	}
-	if (*outCount >= 1) {
-		*outCapabilities = GRALLOC1_CAPABILITY_ON_ADAPTER;
-		*outCount = 1;
-	}
-  return;
+		     int32_t */*outCapabilities*/) {
+    *outCount = 0;
 }
 
 gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *device, int32_t function) {
@@ -55,7 +49,7 @@ gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *devic
 	    return nullptr;
 	}
 
-    constexpr auto lastFunction = static_cast<int32_t>(GRALLOC1_LAST_ADAPTER_FUNCTION);
+    constexpr auto lastFunction = static_cast<int32_t>(GRALLOC1_LAST_FUNCTION);
     if (function < 0 || function > lastFunction) {
         ALOGE("Invalid function descriptor");
         return nullptr;
@@ -98,23 +92,12 @@ gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *devic
                     bufferHook<decltype(&Buffer::getStride),
                     &Buffer::getStride, uint32_t*>);
         case GRALLOC1_FUNCTION_ALLOCATE:
-            // Not provided, since we'll use ALLOCATE_WITH_ID
-            return nullptr;
-        case GRALLOC1_FUNCTION_ALLOCATE_WITH_ID:
-            return reinterpret_cast<gralloc1_function_pointer_t>(AllocateWithId);
-            /*if (mDevice != nullptr) {
-                return asFP<GRALLOC1_PFN_ALLOCATE_WITH_ID>(allocateWithIdHook);
-            } else {
-                return nullptr;
-            }*/
+	    return reinterpret_cast<gralloc1_function_pointer_t>(Allocate);
         case GRALLOC1_FUNCTION_RETAIN:
-            return reinterpret_cast<gralloc1_function_pointer_t>(
-                    managementHook<&Gralloc1Device::retain>);
+            return reinterpret_cast<gralloc1_function_pointer_t>(Retain);
         case GRALLOC1_FUNCTION_RELEASE:
             return reinterpret_cast<gralloc1_function_pointer_t>(
                     managementHook<&Gralloc1Device::release>);
-        case GRALLOC1_FUNCTION_RETAIN_GRAPHIC_BUFFER:
-            return reinterpret_cast<gralloc1_function_pointer_t>(RetainGraphicBuffer);
         case GRALLOC1_FUNCTION_GET_NUM_FLEX_PLANES:
             return reinterpret_cast<gralloc1_function_pointer_t>(
                     bufferHook<decltype(&Buffer::getNumFlexPlanes),
@@ -126,10 +109,6 @@ gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *devic
             return reinterpret_cast<gralloc1_function_pointer_t>(
                     lockHook<struct android_flex_layout,
                     &Gralloc1Device::lockFlex>);
-        case GRALLOC1_FUNCTION_LOCK_YCBCR:
-            return reinterpret_cast<gralloc1_function_pointer_t>(
-                    lockHook<struct android_ycbcr,
-                    &Gralloc1Device::lockYCbCr>);
         case GRALLOC1_FUNCTION_UNLOCK:
             return reinterpret_cast<gralloc1_function_pointer_t>(Unlock);
         case GRALLOC1_FUNCTION_INVALID:
@@ -141,22 +120,46 @@ gralloc1_function_pointer_t Gralloc1Device::GetFunction(gralloc1_device_t *devic
     return nullptr;
 }
 
-gralloc1_error_t Gralloc1Device::AllocateWithId(
-        gralloc1_device_t* device, gralloc1_buffer_descriptor_t descriptorId,
-        gralloc1_backing_store_t store, buffer_handle_t* outBuffer)
+gralloc1_error_t Gralloc1Device::Allocate(gralloc1_device_t* device,
+        uint32_t numDescriptors,
+        const gralloc1_buffer_descriptor_t* descriptors,
+        buffer_handle_t* outBuffers)
 {
-    auto descriptor = getImpl(device)->getDescriptor(descriptorId);
-    if (!descriptor) {
-        return GRALLOC1_ERROR_BAD_DESCRIPTOR;
+    if (!outBuffers) {
+        return GRALLOC1_ERROR_UNDEFINED;
     }
 
-    buffer_handle_t bufferHandle = nullptr;
-    auto error = getImpl(device)->allocate(descriptor, store, &bufferHandle);
-    if (error != GRALLOC1_ERROR_NONE) {
-        return error;
+    auto adapter = getImpl(device);
+
+    gralloc1_error_t error = GRALLOC1_ERROR_NONE;
+    uint32_t i;
+    for (i = 0; i < numDescriptors; i++) {
+        auto descriptor = adapter->getDescriptor(descriptors[i]);
+        if (!descriptor) {
+            error = GRALLOC1_ERROR_BAD_DESCRIPTOR;
+            break;
+        }
+
+        buffer_handle_t bufferHandle = nullptr;
+        error = adapter->allocate(descriptors[i], descriptor, &bufferHandle);
+        if (error != GRALLOC1_ERROR_NONE) {
+            break;
+        }
+
+        outBuffers[i] = bufferHandle;
     }
 
-    *outBuffer = bufferHandle;
+    if (error == GRALLOC1_ERROR_NONE) {
+        if (numDescriptors > 1) {
+            error = GRALLOC1_ERROR_NOT_SHARED;
+        }
+    } else {
+        for (uint32_t j = 0; j < i; j++) {
+            adapter->release(adapter->getBuffer(outBuffers[j]));
+            outBuffers[j] = nullptr;
+        }
+    }
+
     return error;
 }
 
@@ -195,15 +198,18 @@ Gralloc1Device::Buffer::Buffer(buffer_handle_t handle,
     mStride(stride),
     mWasAllocated(wasAllocated) {}
 
-gralloc1_error_t Gralloc1Device::allocate(const std::shared_ptr<Descriptor>& descriptor,
-        gralloc1_backing_store_t store, buffer_handle_t* outBufferHandle) {
-    ALOGV("allocate(%" PRIu64 ", %#" PRIx64 ")", descriptor->id, store);
+gralloc1_error_t Gralloc1Device::allocate(
+        gralloc1_buffer_descriptor_t id,
+        const std::shared_ptr<Descriptor>& descriptor,
+        buffer_handle_t* outBufferHandle)
+{
+    ALOGV("allocate(%" PRIu64 ")", id);
 
     // If this function is being called, it's because we handed out its function
     // pointer, which only occurs when mDevice has been loaded successfully and
     // we are permitted to allocate
-    int usage = static_cast<int>(descriptor->producerUsage) |
-            static_cast<int>(descriptor->consumerUsage);
+    int usage = android_convertGralloc1To0Usage(
+            descriptor->producerUsage, descriptor->consumerUsage);
     buffer_handle_t handle = nullptr;
     int stride = 0;
     ALOGV("Calling alloc(%p, %u, %u, %i, %u)", mModule, descriptor->width,
@@ -217,9 +223,11 @@ gralloc1_error_t Gralloc1Device::allocate(const std::shared_ptr<Descriptor>& des
                 strerror(-error));
         return GRALLOC1_ERROR_NO_RESOURCES;
     }
+    ALOGV("allocated(%p)", handle);
+	((struct gralloc_drm_handle_t *)handle)->backing_store = id;
 
     *outBufferHandle = handle;
-    auto buffer = std::make_shared<Buffer>(handle, store, *descriptor, stride,
+    auto buffer = std::make_shared<Buffer>(handle, id, *descriptor, stride,
             true);
 
     std::lock_guard<std::mutex> lock(mBufferMutex);
@@ -229,16 +237,55 @@ gralloc1_error_t Gralloc1Device::allocate(const std::shared_ptr<Descriptor>& des
 }
 
 gralloc1_error_t Gralloc1Device::retain(const std::shared_ptr<Buffer>& buffer) {
+    std::lock_guard<std::mutex> lock(mBufferMutex);
     buffer->retain();
     return GRALLOC1_ERROR_NONE;
 }
 
+gralloc1_error_t Gralloc1Device::retain(buffer_handle_t handle) {
+    ALOGV("retain(%p)", handle);
+
+    std::lock_guard<std::mutex> lock(mBufferMutex);
+    if (mBuffers.count(handle) != 0) {
+        mBuffers[handle]->retain();
+        return GRALLOC1_ERROR_NONE;
+    }
+
+    ALOGV("Calling registerBuffer(%p)", handle);
+    int result = drm_register(mModule, handle);
+    if (result != 0) {
+        ALOGE("gralloc0 register failed: %d", result);
+        return GRALLOC1_ERROR_NO_RESOURCES;
+    }
+
+	struct gralloc_drm_handle_t *drm_handle =
+		(struct gralloc_drm_handle_t *) handle;
+
+    gralloc1_buffer_descriptor_t id = drm_handle->backing_store;
+    gralloc1_producer_usage_t producerUsage;
+    gralloc1_consumer_usage_t consumerUsage;
+    android_convertGralloc0To1Usage((int32_t)drm_handle->usage,
+            (uint64_t *)&producerUsage, (uint64_t *)&consumerUsage);
+
+    Descriptor descriptor{this, id};
+    descriptor.setDimensions(drm_handle->width, drm_handle->height);
+    descriptor.setFormat(drm_handle->format);
+    descriptor.setProducerUsage(producerUsage);
+    descriptor.setConsumerUsage(consumerUsage);
+    auto buffer = std::make_shared<Buffer>(handle, id,
+            descriptor, drm_handle->stride, false);
+    mBuffers.emplace(handle, std::move(buffer));
+    return GRALLOC1_ERROR_NONE;
+}
+
 gralloc1_error_t Gralloc1Device::release(const std::shared_ptr<Buffer>& buffer) {
+    std::lock_guard<std::mutex> lock(mBufferMutex);
+    buffer_handle_t handle = buffer->getHandle();
+    ALOGV("release(%p)", handle);
     if (!buffer->release()) {
         return GRALLOC1_ERROR_NONE;
     }
 
-    buffer_handle_t handle = buffer->getHandle();
     if (buffer->wasAllocated()) {
         ALOGV("Calling free(%p)", handle);
         int result = drm_free(handle);
@@ -253,43 +300,10 @@ gralloc1_error_t Gralloc1Device::release(const std::shared_ptr<Buffer>& buffer) 
         }
     }
 
-    std::lock_guard<std::mutex> lock(mBufferMutex);
     mBuffers.erase(handle);
     return GRALLOC1_ERROR_NONE;
 }
 
-gralloc1_error_t Gralloc1Device::retain(const android::GraphicBuffer* graphicBuffer) {
-    ALOGV("retainGraphicBuffer(%p, %#" PRIx64 ")",
-            graphicBuffer->getNativeBuffer()->handle, graphicBuffer->getId());
-
-    buffer_handle_t handle = graphicBuffer->getNativeBuffer()->handle;
-    std::lock_guard<std::mutex> lock(mBufferMutex);
-    if (mBuffers.count(handle) != 0) {
-        mBuffers[handle]->retain();
-        return GRALLOC1_ERROR_NONE;
-    }
-
-    ALOGV("Calling registerBuffer(%p)", handle);
-    int result = drm_register(mModule, handle);
-    if (result != 0) {
-        ALOGE("gralloc0 register failed: %d", result);
-        return GRALLOC1_ERROR_NO_RESOURCES;
-    }
-
-    Descriptor descriptor{this, sNextBufferDescriptorId++};
-    descriptor.setDimensions(graphicBuffer->getWidth(),
-            graphicBuffer->getHeight());
-    descriptor.setFormat(graphicBuffer->getPixelFormat());
-    descriptor.setProducerUsage(
-            static_cast<gralloc1_producer_usage_t>(graphicBuffer->getUsage()));
-    descriptor.setConsumerUsage(
-            static_cast<gralloc1_consumer_usage_t>(graphicBuffer->getUsage()));
-    auto buffer = std::make_shared<Buffer>(handle,
-            static_cast<gralloc1_backing_store_t>(graphicBuffer->getId()),
-            descriptor, graphicBuffer->getStride(), false);
-    mBuffers.emplace(handle, std::move(buffer));
-    return GRALLOC1_ERROR_NONE;
-}
 
 gralloc1_error_t Gralloc1Device::lock(const std::shared_ptr<Buffer>& buffer,
         gralloc1_producer_usage_t producerUsage, gralloc1_consumer_usage_t consumerUsage,
@@ -312,15 +326,6 @@ gralloc1_error_t Gralloc1Device::lockFlex(
         gralloc1_consumer_usage_t /*consumerUsage*/,
         const gralloc1_rect_t& /*accessRegion*/,
         struct android_flex_layout* /*outData*/,
-        const sp<Fence>& /*acquireFence*/) {
-    return GRALLOC1_ERROR_UNSUPPORTED;
-}
-gralloc1_error_t Gralloc1Device::lockYCbCr(
-        const std::shared_ptr<Buffer>& /*buffer*/,
-        gralloc1_producer_usage_t /*producerUsage*/,
-        gralloc1_consumer_usage_t /*consumerUsage*/,
-        const gralloc1_rect_t& /*accessRegion*/,
-        struct android_ycbcr* /*outFlex*/,
         const sp<Fence>& /*acquireFence*/) {
     return GRALLOC1_ERROR_UNSUPPORTED;
 }

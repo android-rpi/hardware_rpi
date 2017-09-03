@@ -11,7 +11,8 @@ LOCAL_SRC_FILES := Gralloc1Device.cpp gralloc1_rpi.cpp
 LOCAL_C_INCLUDES := \
 	external/drm_gralloc \
 	external/libdrm \
-	external/libdrm/include/drm
+	external/libdrm/include/drm \
+	system/core/libgrallocusage/include
 
 LOCAL_SHARED_LIBRARIES := \
 	libgralloc_drm \

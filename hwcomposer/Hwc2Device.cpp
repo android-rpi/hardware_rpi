@@ -198,6 +198,11 @@ hwc2_function_pointer_t Hwc2Device::GetFunction(struct hwc2_device *device,
             return asFP<HWC2_PFN_VALIDATE_DISPLAY>(
                     displayHook<decltype(&Display::validateDisplay),
                     &Display::validateDisplay, uint32_t*, uint32_t*>);
+        case FunctionDescriptor::GetClientTargetSupport:
+            return asFP<HWC2_PFN_GET_CLIENT_TARGET_SUPPORT>(
+                    displayHook<decltype(&Display::getClientTargetSupport),
+                    &Display::getClientTargetSupport, uint32_t, uint32_t,
+                                                      int32_t, int32_t>);
 
         // Layer functions
         case FunctionDescriptor::SetCursorPosition:
@@ -484,9 +489,12 @@ Error Hwc2Device::Display::getChangedCompositionTypes(
 }
 
 Error Hwc2Device::Display::getColorModes(uint32_t* outNumModes,
-        int32_t* /*outModes*/)
+        int32_t* outModes)
 {
-    *outNumModes = 0;
+    *outNumModes = 1;
+    if (outModes != NULL) {
+        *outModes = HAL_COLOR_MODE_NATIVE;
+    }
     return Error::None;
 }
 
@@ -776,6 +784,22 @@ Error Hwc2Device::Display::updateLayerZ(hwc2_layer_t layerId, uint32_t z)
     mZIsDirty = true;
 
     return Error::None;
+}
+
+Error Hwc2Device::Display::getClientTargetSupport(uint32_t width, uint32_t height,
+                                      int32_t format, int32_t dataspace){
+    if (mActiveConfig == nullptr) {
+        return Error::Unsupported;
+    }
+
+    if (width == mActiveConfig->getAttribute(Attribute::Width) &&
+            height == mActiveConfig->getAttribute(Attribute::Height) &&
+            format == HAL_PIXEL_FORMAT_RGBA_8888 &&
+            dataspace == HAL_DATASPACE_UNKNOWN) {
+        return Error::None;
+    }
+
+    return Error::Unsupported;
 }
 
 Error Hwc2Device::Display::presentDisplay(int32_t* outRetireFence)

@@ -9,16 +9,6 @@
 #include <unordered_map>
 #include <vector>
 
-static const auto GRALLOC1_CAPABILITY_ON_ADAPTER =
-        static_cast<gralloc1_capability_t>(GRALLOC1_LAST_CAPABILITY + 1);
-static const auto GRALLOC1_FUNCTION_RETAIN_GRAPHIC_BUFFER =
-        static_cast<gralloc1_function_descriptor_t>(GRALLOC1_LAST_FUNCTION + 1);
-static const auto GRALLOC1_FUNCTION_ALLOCATE_WITH_ID =
-        static_cast<gralloc1_function_descriptor_t>(GRALLOC1_LAST_FUNCTION + 2);
-static const auto GRALLOC1_FUNCTION_LOCK_YCBCR =
-        static_cast<gralloc1_function_descriptor_t>(GRALLOC1_LAST_FUNCTION + 3);
-static const auto GRALLOC1_LAST_ADAPTER_FUNCTION = GRALLOC1_FUNCTION_LOCK_YCBCR;
-
 namespace android {
 
 #define getImpl(exp) reinterpret_cast<Gralloc1Device *>(exp)
@@ -80,12 +70,13 @@ private:
         return callBufferFunction(device, bufferHandle,
                 &Buffer::getProducerUsage, usage);
     }
-    static gralloc1_error_t AllocateWithId(gralloc1_device_t* device,
-            gralloc1_buffer_descriptor_t descriptors,
-            gralloc1_backing_store_t id, buffer_handle_t* outBuffer);
-    static gralloc1_error_t RetainGraphicBuffer(gralloc1_device_t* device,
-            const GraphicBuffer* buffer) {
-        return getImpl(device)->retain(buffer);
+    static gralloc1_error_t Allocate(gralloc1_device_t* device,
+            uint32_t numDescriptors,
+            const gralloc1_buffer_descriptor_t* descriptors,
+            buffer_handle_t* outBuffer);
+    static gralloc1_error_t Retain(gralloc1_device_t* device,
+            buffer_handle_t bufferHandle) {
+        return getImpl(device)->retain(bufferHandle);
     }
     static gralloc1_error_t Unlock(gralloc1_device_t* device,
             buffer_handle_t bufferHandle, int32_t* outReleaseFenceFd) {
@@ -104,11 +95,12 @@ private:
 
     gralloc1_error_t createDescriptor(gralloc1_buffer_descriptor_t *descriptor);
     gralloc1_error_t destroyDescriptor(gralloc1_buffer_descriptor_t descriptor);
-    gralloc1_error_t allocate(const std::shared_ptr<Descriptor>& descriptor,
-            gralloc1_backing_store_t id, buffer_handle_t* outBuffer);
+    gralloc1_error_t allocate(gralloc1_buffer_descriptor_t id,
+            const std::shared_ptr<Descriptor>& descriptor,
+            buffer_handle_t* outBufferHandle);
     gralloc1_error_t retain(const std::shared_ptr<Buffer>& buffer);
+    gralloc1_error_t retain(buffer_handle_t handle);
     gralloc1_error_t release(const std::shared_ptr<Buffer>& buffer);
-    gralloc1_error_t retain(const GraphicBuffer* buffer);
     gralloc1_error_t lock(const std::shared_ptr<Buffer>& buffer,
             gralloc1_producer_usage_t producerUsage,
             gralloc1_consumer_usage_t consumerUsage,
