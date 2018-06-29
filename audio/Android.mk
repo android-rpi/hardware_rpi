@@ -22,6 +22,8 @@ LOCAL_SRC_FILES := audio_hw.c
 LOCAL_C_INCLUDES += external/tinyalsa/include
 LOCAL_SHARED_LIBRARIES := liblog libcutils libtinyalsa
 LOCAL_MODULE_TAGS := optional
-LOCAL_CFLAGS := -Wno-unused-parameter
+LOCAL_CFLAGS := -Wno-unused-parameter \
+	-Wno-unused-label \
+	-Wno-unused-variable
 
 include $(BUILD_SHARED_LIBRARY)

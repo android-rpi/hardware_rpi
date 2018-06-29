@@ -30,6 +30,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <poll.h>
 #include <math.h>
 #include <gralloc_drm.h>

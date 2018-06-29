@@ -29,4 +29,8 @@ LOCAL_SRC_FILES := Hwc2Device.cpp hwc2_rpi.cpp
 LOCAL_MODULE := hwcomposer.rpi3
 LOCAL_MODULE_TAGS := optional
 
+LOCAL_CFLAGS += \
+	-Wno-unused-variable \
+	-Wno-unused-function
+
 include $(BUILD_SHARED_LIBRARY)

@@ -20,7 +20,10 @@ LOCAL_SHARED_LIBRARIES := \
 	liblog \
 	libui
 
-LOCAL_CFLAGS += -Wno-c++11-narrowing
+LOCAL_CFLAGS += -Wno-c++11-narrowing \
+	-Wno-unused-value \
+	-Wno-unused-variable \
+	-Wno-switch
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -38,5 +41,8 @@ LOCAL_SHARED_LIBRARIES := \
 	libgralloc_drm \
 	liblog \
 	libcutils
+
+LOCAL_CFLAGS += \
+	-Wno-unused-variable
 
 include $(BUILD_SHARED_LIBRARY)
