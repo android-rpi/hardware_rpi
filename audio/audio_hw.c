@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "audio_hw_default"
+#define LOG_TAG "audio_hw_primary"
 //#define LOG_NDEBUG 0
 
 #include <errno.h>
@@ -22,15 +22,16 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/time.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
 
-#include <cutils/log.h>
-#include <cutils/str_parms.h>
+#include <log/log.h>
 
+#include <hardware/audio.h>
 #include <hardware/hardware.h>
 #include <system/audio.h>
 #include <hardware/audio.h>
-
 #include <tinyalsa/asoundlib.h>
 
 #define PCM_CARD 1
@@ -46,27 +47,20 @@ struct pcm_config pcm_config_out = {
     .period_size = OUT_PERIOD_SIZE,
     .period_count = OUT_PERIOD_COUNT,
     .format = PCM_FORMAT_S16_LE,
-    .start_threshold = OUT_PERIOD_SIZE * OUT_PERIOD_COUNT,
 };
 
 struct audio_device {
     struct audio_hw_device hw_device;
-
     pthread_mutex_t lock; /* see note below on mutex acquisition order */
-    unsigned int out_device;
-
-    struct stream_out *active_out;
 };
 
 struct stream_out {
     struct audio_stream_out stream;
-
     pthread_mutex_t lock; /* see note below on mutex acquisition order */
     struct pcm *pcm;
     struct pcm_config *pcm_config;
     bool standby;
     uint64_t written; /* total frames written, not cleared when entering standby */
-
     struct audio_device *dev;
 };
 
@@ -75,12 +69,9 @@ struct stream_out {
 /* must be called with hw device and output stream mutexes locked */
 static void do_out_standby(struct stream_out *out)
 {
-    struct audio_device *adev = out->dev;
-
     if (!out->standby) {
         pcm_close(out->pcm);
         out->pcm = NULL;
-        adev->active_out = NULL;
         out->standby = true;
     }
 }
@@ -88,16 +79,18 @@ static void do_out_standby(struct stream_out *out)
 /* must be called with hw device and output stream mutexes locked */
 static int start_output_stream(struct stream_out *out)
 {
-    struct audio_device *adev = out->dev;
     ALOGV("%s enter",__func__);
 
     out->pcm = pcm_open(PCM_CARD, PCM_DEVICE, PCM_OUT, out->pcm_config);
+    if (out->pcm == NULL) {
+        return -ENOMEM;
+    }
     if (out->pcm && !pcm_is_ready(out->pcm)) {
         ALOGE("pcm_open(out) failed: %s", pcm_get_error(out->pcm));
         pcm_close(out->pcm);
+	out->pcm = NULL;
         return -ENOMEM;
     }
-    adev->active_out = out;
 
     ALOGV("%s exit",__func__);
     return 0;
@@ -167,35 +160,8 @@ static int out_dump(const struct audio_stream *stream, int fd)
 
 static int out_set_parameters(struct audio_stream *stream, const char *kvpairs)
 {
-    struct stream_out *out = (struct stream_out *)stream;
-    struct audio_device *adev = out->dev;
-    struct str_parms *parms;
-    char value[32];
-    int ret;
-    unsigned int val;
     ALOGV("out_set_parameters");
-
-    parms = str_parms_create_str(kvpairs);
-    ret = str_parms_get_str(parms, AUDIO_PARAMETER_STREAM_ROUTING,
-                            value, sizeof(value));
-    pthread_mutex_lock(&adev->lock);
-    if (ret >= 0) {
-        val = atoi(value);
-        if ((adev->out_device != val) && (val != 0)) {
-            // If SPEAKER is turned on/off, we need to put audio into standby
-            if ((val & AUDIO_DEVICE_OUT_SPEAKER) ^
-                    (adev->out_device & AUDIO_DEVICE_OUT_SPEAKER)) {
-                pthread_mutex_lock(&out->lock);
-                do_out_standby(out);
-                pthread_mutex_unlock(&out->lock);
-            }
-            adev->out_device = val;
-        }
-    }
-
-    pthread_mutex_unlock(&adev->lock);
-    str_parms_destroy(parms);
-    return ret;
+    return 0;
 }
 
 static char * out_get_parameters(const struct audio_stream *stream, const char *keys)
@@ -206,12 +172,8 @@ static char * out_get_parameters(const struct audio_stream *stream, const char *
 
 static uint32_t out_get_latency(const struct audio_stream_out *stream)
 {
-    struct stream_out *out = (struct stream_out *)stream;
-
-    uint32_t latency = (out->pcm_config->period_size * out->pcm_config->period_count * 1000) / out_get_sample_rate(&stream->common);
-
-    ALOGV("out_get_latency : %d", latency);
-    return latency;
+    ALOGV("out_get_latency");
+    return 0;
 }
 
 static int out_set_volume(struct audio_stream_out *stream, float left,
@@ -224,13 +186,12 @@ static int out_set_volume(struct audio_stream_out *stream, float left,
 static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
                          size_t bytes)
 {
-    int ret = 0;
     struct stream_out *out = (struct stream_out *)stream;
     struct audio_device *adev = out->dev;
     size_t frame_size = audio_stream_out_frame_size(stream);
     int16_t *in_buffer = (int16_t *)buffer;
     size_t in_frames = bytes / frame_size;
-    int kernel_frames;
+    int ret = 0;
 
     ALOGV("out_write: bytes: %d", bytes);
 
@@ -339,7 +300,7 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
 
     struct audio_device *adev = (struct audio_device *)dev;
     struct stream_out *out;
-    int ret;
+    *stream_out = NULL;
 
     out = (struct stream_out *)calloc(1, sizeof(struct stream_out));
     if (!out)
@@ -367,20 +328,17 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     out->pcm_config = &pcm_config_out;
     out->dev = adev;
     out->standby = true;
+    out->written = 0;
 
     *stream_out = &out->stream;
     return 0;
-
-err_open:
-    free(out);
-    *stream_out = NULL;
-    return ret;
 }
 
 static void adev_close_output_stream(struct audio_hw_device *dev,
                                      struct audio_stream_out *stream)
 {
     ALOGV("adev_close_output_stream...");
+    out_standby(&stream->common);
     free(stream);
 }
 
@@ -412,6 +370,24 @@ static int adev_set_voice_volume(struct audio_hw_device *dev, float volume)
 static int adev_set_master_volume(struct audio_hw_device *dev, float volume)
 {
     ALOGV("adev_set_master_volume: %f", volume);
+    return -ENOSYS;
+}
+
+static int adev_get_master_volume(struct audio_hw_device *dev, float *volume)
+{
+    ALOGV("adev_get_master_volume: %f", *volume);
+    return -ENOSYS;
+}
+
+static int adev_set_master_mute(struct audio_hw_device *dev, bool muted)
+{
+    ALOGV("adev_set_master_mute: %d", muted);
+    return -ENOSYS;
+}
+
+static int adev_get_master_mute(struct audio_hw_device *dev, bool *muted)
+{
+    ALOGV("adev_get_master_mute: %d", *muted);
     return -ENOSYS;
 }
 
@@ -480,7 +456,6 @@ static int adev_open(const hw_module_t* module, const char* name,
     ALOGV("adev_open: %s", name);
 
     struct audio_device *adev;
-    int ret;
 
     if (strcmp(name, AUDIO_HARDWARE_INTERFACE) != 0)
         return -EINVAL;
@@ -497,6 +472,9 @@ static int adev_open(const hw_module_t* module, const char* name,
     adev->hw_device.init_check = adev_init_check;
     adev->hw_device.set_voice_volume = adev_set_voice_volume;
     adev->hw_device.set_master_volume = adev_set_master_volume;
+    adev->hw_device.get_master_volume = adev_get_master_volume;
+    adev->hw_device.set_master_mute = adev_set_master_mute;
+    adev->hw_device.get_master_mute = adev_get_master_mute;
     adev->hw_device.set_mode = adev_set_mode;
     adev->hw_device.set_mic_mute = adev_set_mic_mute;
     adev->hw_device.get_mic_mute = adev_get_mic_mute;
@@ -508,8 +486,6 @@ static int adev_open(const hw_module_t* module, const char* name,
     adev->hw_device.open_input_stream = adev_open_input_stream;
     adev->hw_device.close_input_stream = adev_close_input_stream;
     adev->hw_device.dump = adev_dump;
-
-    adev->out_device = AUDIO_DEVICE_OUT_SPEAKER;
 
     *device = &adev->hw_device.common;
 
