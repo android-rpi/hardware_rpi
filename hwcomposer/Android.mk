@@ -32,6 +32,7 @@ LOCAL_MODULE_TAGS := optional
 
 LOCAL_CFLAGS += \
 	-Wno-unused-variable \
-	-Wno-unused-function
+	-Wno-unused-function \
+	-Wno-sign-compare
 
 include $(BUILD_SHARED_LIBRARY)
