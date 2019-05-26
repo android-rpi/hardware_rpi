@@ -1,0 +1,7 @@
+cc_library_shared {
+    name: "memtrack.rpi3",
+    relative_install_path: "hw",
+    proprietary: true,
+    srcs: ["memtrack_rpi.c"],
+    cflags: ["-Wconversion", "-Wall", "-Werror"],
+}
