@@ -39,31 +39,9 @@
 
 #include <drm_fourcc.h>
 
-struct gralloc_drm_plane_t {
-	drmModePlane *drm_plane;
+#include "hwc_context.h"
 
-	/* plane has been set to display a layer */
-	uint32_t active;
-
-	/* handle to display */
-	buffer_handle_t handle;
-
-	/* identifier set by hwc */
-	uint32_t id;
-
-	/* position, crop and scale */
-	uint32_t src_x;
-	uint32_t src_y;
-	uint32_t src_w;
-	uint32_t src_h;
-	uint32_t dst_x;
-	uint32_t dst_y;
-	uint32_t dst_w;
-	uint32_t dst_h;
-
-	/* previous buffer, for refcounting */
-	struct gralloc_drm_bo_t *prev;
-};
+namespace android {
 
 static unsigned int drm_format_from_hal(int hal_format)
 {
@@ -85,38 +63,21 @@ static unsigned int drm_format_from_hal(int hal_format)
 }
 
 /*
- * Modify pitches, offsets and handles according to
- * the format and return corresponding drm format value
- */
-static int resolve_drm_format(struct gralloc_drm_bo_t *bo,
-	uint32_t *pitches, uint32_t *offsets, uint32_t *handles)
-{
-	struct gralloc_drm_t *drm = bo->drm;
-
-	pitches[0] = bo->handle->stride;
-	handles[0] = bo->fb_handle;
-
-	/* driver takes care of HW specific padding, alignment etc. */
-	if (drm->drv->resolve_format)
-		drm->drv->resolve_format(drm->drv, bo,
-			pitches, offsets, handles);
-
-	return drm_format_from_hal(bo->handle->format);
-}
-
-/*
  * Add a fb object for a bo.
  */
-int gralloc_drm_bo_add_fb(struct gralloc_drm_bo_t *bo)
+static int gralloc_drm_bo_add_fb(struct gralloc_drm_bo_t *bo)
 {
+	if (bo->fb_id)
+		return 0;
+
 	uint32_t pitches[4] = { 0, 0, 0, 0 };
 	uint32_t offsets[4] = { 0, 0, 0, 0 };
 	uint32_t handles[4] = { 0, 0, 0, 0 };
 
-	if (bo->fb_id)
-		return 0;
+	pitches[0] = bo->handle->stride;
+	handles[0] = bo->fb_handle;
 
-	int drm_format = resolve_drm_format(bo, pitches, offsets, handles);
+	int drm_format = drm_format_from_hal(bo->handle->format);
 
 	if (drm_format == 0) {
 		ALOGE("error resolving drm format");
@@ -132,12 +93,11 @@ int gralloc_drm_bo_add_fb(struct gralloc_drm_bo_t *bo)
 /*
  * Program CRTC.
  */
-static int drm_kms_set_crtc(struct gralloc_drm_t *drm,
-	struct gralloc_drm_output *output, int fb_id)
+int hwc_context::set_crtc(struct kms_output *output, int fb_id)
 {
 	int ret;
 
-	ret = drmModeSetCrtc(drm->fd, output->crtc_id, fb_id,
+	ret = drmModeSetCrtc(kms_fd, output->crtc_id, fb_id,
 			0, 0, &output->connector_id, 1, &output->mode);
 	if (ret) {
 		ALOGE("failed to set crtc (%s) (crtc_id %d, fb_id %d, conn %d, mode %dx%d)",
@@ -156,147 +116,47 @@ static void page_flip_handler(int /*fd*/, unsigned int /*sequence*/,
 			      unsigned int /*tv_sec*/, unsigned int /*tv_usec*/,
 		void *user_data)
 {
-	struct gralloc_drm_t *drm = (struct gralloc_drm_t *) user_data;
+	class hwc_context *ctx = (class hwc_context *) user_data;
 
 	/* ack the last scheduled flip */
-	drm->current_front = drm->next_front;
-	drm->next_front = NULL;
+	ctx->current_front = ctx->next_front;
+	ctx->next_front = NULL;
 }
-
-/*
- * Set a plane.
- */
-static int gralloc_drm_bo_setplane(struct gralloc_drm_t *drm,
-	struct gralloc_drm_plane_t *plane)
-{
-	struct gralloc_drm_bo_t *bo = NULL;
-	int err;
-
-	if (plane->handle)
-		bo = gralloc_drm_bo_from_handle(plane->handle);
-
-	// create a framebuffer if does not exist
-	if (bo && bo->fb_id == 0) {
-		err = gralloc_drm_bo_add_fb(bo);
-		if (err) {
-			ALOGE("%s: could not create drm fb, (%s)",
-				__func__, strerror(-err));
-			return err;
-		}
-	}
-
-	err = drmModeSetPlane(drm->fd,
-		plane->drm_plane->plane_id,
-		drm->primary.crtc_id,
-		bo ? bo->fb_id : 0,
-		0, // flags
-		plane->dst_x,
-		plane->dst_y,
-		plane->dst_w,
-		plane->dst_h,
-		plane->src_x << 16,
-		plane->src_y << 16,
-		plane->src_w << 16,
-		plane->src_h << 16);
-
-	if (err) {
-		ALOGE("drmModeSetPlane : error (%s) (plane %d crtc %d fb %d)",
-			strerror(-err),
-			plane->drm_plane->plane_id,
-			drm->primary.crtc_id,
-			bo ? bo->fb_id : 0);
-	}
-
-	if (plane->prev)
-		gralloc_drm_bo_decref(plane->prev);
-
-	if (bo)
-		bo->refcount++;
-
-	plane->prev = bo;
-
-	return err;
-}
-
-/*
- * Returns if a particular plane is supported with the implementation
- */
-static unsigned is_plane_supported(const struct gralloc_drm_t *drm,
-	const struct gralloc_drm_plane_t *plane)
-{
-	/* Planes are only supported on primary pipe for now */
-	return plane->drm_plane->possible_crtcs & (1 << drm->primary.pipe);
-}
-
-/*
- * Sets all the active planes to be displayed.
- */
-static void gralloc_drm_set_planes(struct gralloc_drm_t *drm)
-{
-	struct gralloc_drm_plane_t *plane = drm->planes;
-	unsigned int i;
-	for (i = 0; i < drm->plane_resources->count_planes;
-		i++, plane++) {
-		/* plane is not in use at all */
-		if (!plane->active && !plane->handle)
-			continue;
-
-		/* plane is active, safety check if it is supported */
-		if (!is_plane_supported(drm, plane))
-			ALOGE("%s: plane %d is not supported",
-				 __func__, plane->drm_plane->plane_id);
-
-		/*
-		 * Disable overlay if it is not active
-		 * or if there is error during setplane
-		 */
-		if (!plane->active)
-			plane->handle = 0;
-
-		if (gralloc_drm_bo_setplane(drm, plane))
-			plane->active = 0;
-	}
-}
-
 
 /*
  * Schedule a page flip.
  */
-static int drm_kms_page_flip(struct gralloc_drm_t *drm,
-		struct gralloc_drm_bo_t *bo)
+int hwc_context::page_flip(struct gralloc_drm_bo_t *bo)
 {
 	int ret;
 
 	/* there is another flip pending */
-	while (drm->next_front) {
-		drm->waiting_flip = 1;
-		drmHandleEvent(drm->fd, &drm->evctx);
-		drm->waiting_flip = 0;
-		if (drm->next_front) {
+	while (next_front) {
+		waiting_flip = 1;
+		drmHandleEvent(kms_fd, &evctx);
+		waiting_flip = 0;
+		if (next_front) {
 			/* record an error and break */
 			ALOGE("drmHandleEvent returned without flipping");
-			drm->current_front = drm->next_front;
-			drm->next_front = NULL;
+			current_front = next_front;
+			next_front = NULL;
 		}
 	}
 
 	if (!bo)
 		return 0;
 
-	/* set planes to be displayed */
-	gralloc_drm_set_planes(drm);
-
-	ret = drmModePageFlip(drm->fd, drm->primary.crtc_id, bo->fb_id,
-			DRM_MODE_PAGE_FLIP_EVENT, (void *) drm);
+	ret = drmModePageFlip(kms_fd, primary_output.crtc_id, bo->fb_id,
+			DRM_MODE_PAGE_FLIP_EVENT, (void *) this);
 	if (ret) {
 		ALOGE("failed to perform page flip for primary (%s) (crtc %d fb %d))",
-			strerror(errno), drm->primary.crtc_id, bo->fb_id);
+			strerror(errno), primary_output.crtc_id, bo->fb_id);
 		/* try to set mode for next frame */
 		if (errno != EBUSY)
-			drm->first_post = 1;
+			first_post = 1;
 	}
 	else
-		drm->next_front = bo;
+		next_front = bo;
 
 	return ret;
 }
@@ -304,7 +164,7 @@ static int drm_kms_page_flip(struct gralloc_drm_t *drm,
 /*
  * Wait for the next post.
  */
-static void drm_kms_wait_for_post(struct gralloc_drm_t *drm, int flip)
+void hwc_context::wait_for_post(int flip)
 {
 	unsigned int current, target;
 	drmVBlank vbl;
@@ -318,17 +178,17 @@ static void drm_kms_wait_for_post(struct gralloc_drm_t *drm, int flip)
 	vbl.request.sequence = 0;
 
 	/* get the current vblank */
-	ret = drmWaitVBlank(drm->fd, &vbl);
+	ret = drmWaitVBlank(kms_fd, &vbl);
 	if (ret) {
 		ALOGW("failed to get vblank");
 		return;
 	}
 
 	current = vbl.reply.sequence;
-	if (drm->first_post)
+	if (first_post)
 		target = current;
 	else
-		target = drm->last_swap + drm->swap_interval - flip;
+		target = last_swap + swap_interval - flip;
 
 	/* wait for vblank */
 	if (current < target || !flip) {
@@ -342,22 +202,21 @@ static void drm_kms_wait_for_post(struct gralloc_drm_t *drm, int flip)
                 vbl.request.type = (drmVBlankSeqType) type;
 		vbl.request.sequence = target;
 
-		ret = drmWaitVBlank(drm->fd, &vbl);
+		ret = drmWaitVBlank(kms_fd, &vbl);
 		if (ret) {
 			ALOGW("failed to wait vblank");
 			return;
 		}
 	}
 
-	drm->last_swap = vbl.reply.sequence + flip;
+	last_swap = vbl.reply.sequence + flip;
 }
 
 /*
  * Post a bo.  This is not thread-safe.
  */
-static int gralloc_drm_bo_post(struct gralloc_drm_bo_t *bo)
+int hwc_context::bo_post(struct gralloc_drm_bo_t *bo)
 {
-	struct gralloc_drm_t *drm = bo->drm;
 	int ret;
 
 	if (!bo->fb_id) {
@@ -372,66 +231,66 @@ static int gralloc_drm_bo_post(struct gralloc_drm_bo_t *bo)
 
 	/* TODO spawn a thread to avoid waiting and race */
 
-	if (drm->first_post) {
-		ret = drm_kms_set_crtc(drm, &drm->primary, bo->fb_id);
+	if (first_post) {
+		ret = set_crtc(&primary_output, bo->fb_id);
 		if (!ret) {
-			drm->first_post = 0;
-			drm->current_front = bo;
-			if (drm->next_front == bo)
-				drm->next_front = NULL;
+			first_post = 0;
+			current_front = bo;
+			if (next_front == bo)
+				next_front = NULL;
 		}
 		return ret;
 	}
 
-	if (drm->swap_interval > 1)
-		drm_kms_wait_for_post(drm, 1);
-	ret = drm_kms_page_flip(drm, bo);
-	if (drm->next_front) {
+	if (swap_interval > 1)
+		wait_for_post(1);
+	ret = page_flip(bo);
+	if (next_front) {
 		/*
 		 * wait if the driver says so or the current front
 		 * will be written by CPU
 		 */
-		drm_kms_page_flip(drm, NULL);
+		page_flip(NULL);
 	}
 
 	return ret;
 }
 
-static struct gralloc_drm_t *drm_singleton;
+static class hwc_context *ctx_singleton;
 
 static void on_signal(int /*sig*/)
 {
-	struct gralloc_drm_t *drm = drm_singleton;
+	class hwc_context *ctx = ctx_singleton;
 
 	/* wait the pending flip */
-	if (drm && drm->next_front) {
+	if (ctx && ctx->next_front) {
 		/* there is race, but this function is hacky enough to ignore that */
-		if (drm_singleton->waiting_flip)
+		if (ctx->waiting_flip)
 			usleep(100 * 1000); /* 100ms */
 		else
-			drm_kms_page_flip(drm_singleton, NULL);
+			ctx->page_flip(NULL);
 	}
 
 	exit(-1);
 }
 
-static void drm_kms_init_features(struct gralloc_drm_t *drm)
+void hwc_context::init_features()
 {
-	switch (drm->primary.fb_format) {
+	switch (primary_output.fb_format) {
 	case HAL_PIXEL_FORMAT_RGBA_8888:
 	case HAL_PIXEL_FORMAT_RGB_565:
 		break;
 	default:
-		drm->primary.fb_format = HAL_PIXEL_FORMAT_RGBA_8888;
+		primary_output.fb_format = HAL_PIXEL_FORMAT_RGBA_8888;
 		break;
 	}
 
-	drm->swap_interval = 1;
+	swap_interval = 1;
 
 	struct sigaction act;
-	memset(&drm->evctx, 0, sizeof(drm->evctx));
-	drm->evctx.version = DRM_EVENT_CONTEXT_VERSION;
-	drm->evctx.page_flip_handler = page_flip_handler;
+	memset(&evctx, 0, sizeof(evctx));
+	evctx.version = DRM_EVENT_CONTEXT_VERSION;
+	evctx.page_flip_handler = page_flip_handler;
 
 	/*
 	 * XXX GPU tends to freeze if the program is terminiated with a
@@ -444,7 +303,7 @@ static void drm_kms_init_features(struct gralloc_drm_t *drm)
 	sigaction(SIGINT, &act, NULL);
 	sigaction(SIGTERM, &act, NULL);
 
-	drm_singleton = drm;
+	ctx_singleton = this;
 
 	ALOGD("will use flip for fb posting");
 }
@@ -623,20 +482,19 @@ static drmModeModeInfoPtr find_mode(drmModeConnectorPtr connector, int *bpp)
 /*
  * Initialize KMS with a connector.
  */
-static int drm_kms_init_with_connector(struct gralloc_drm_t *drm,
-		struct gralloc_drm_output *output, drmModeConnectorPtr connector)
-{
+int hwc_context::init_with_connector(struct kms_output *output,
+		drmModeConnectorPtr connector) {
 	drmModeEncoderPtr encoder;
 	drmModeModeInfoPtr mode;
 	static int used_crtcs = 0;
 	int bpp, i;
 
-	encoder = drmModeGetEncoder(drm->fd, connector->encoders[0]);
+	encoder = drmModeGetEncoder(kms_fd, connector->encoders[0]);
 	if (!encoder)
 		return -EINVAL;
 
 	/* find first possible crtc which is not used yet */
-	for (i = 0; i < drm->resources->count_crtcs; i++) {
+	for (i = 0; i < resources->count_crtcs; i++) {
 		if (encoder->possible_crtcs & (1 << i) &&
 			(used_crtcs & (1 << i)) != (1 << i))
 			break;
@@ -645,10 +503,10 @@ static int drm_kms_init_with_connector(struct gralloc_drm_t *drm,
 	used_crtcs |= (1 << i);
 
 	drmModeFreeEncoder(encoder);
-	if (i == drm->resources->count_crtcs)
+	if (i == resources->count_crtcs)
 		return -EINVAL;
 
-	output->crtc_id = drm->resources->crtcs[i];
+	output->crtc_id = resources->crtcs[i];
 	output->connector_id = connector->connector_id;
 	output->pipe = i;
 
@@ -690,18 +548,17 @@ static int drm_kms_init_with_connector(struct gralloc_drm_t *drm,
 /*
  * Fetch a connector of particular type
  */
-static drmModeConnectorPtr fetch_connector(struct gralloc_drm_t *drm,
-	uint32_t type)
+drmModeConnectorPtr hwc_context::fetch_connector(uint32_t type)
 {
 	int i;
 
-	if (!drm->resources)
+	if (!resources)
 		return NULL;
 
-	for (i = 0; i < drm->resources->count_connectors; i++) {
+	for (i = 0; i < resources->count_connectors; i++) {
 		drmModeConnectorPtr connector =
-			connector = drmModeGetConnector(drm->fd,
-				drm->resources->connectors[i]);
+			connector = drmModeGetConnector(kms_fd,
+				resources->connectors[i]);
 		if (connector) {
 			if (connector->connector_type == type &&
 				connector->connection == DRM_MODE_CONNECTED)
@@ -715,68 +572,39 @@ static drmModeConnectorPtr fetch_connector(struct gralloc_drm_t *drm,
 /*
  * Initialize KMS.
  */
-static int gralloc_drm_init_kms(struct gralloc_drm_t *drm)
+int hwc_context::init_kms()
 {
 	drmModeConnectorPtr primary;
 	int i;
 
-	if (drm->resources)
-		return 0;
-
-	drm->resources = drmModeGetResources(drm->fd);
-	if (!drm->resources) {
+	resources = drmModeGetResources(kms_fd);
+	if (!resources) {
 		ALOGE("failed to get modeset resources");
 		return -EINVAL;
 	}
 
-	drm->plane_resources = drmModeGetPlaneResources(drm->fd);
-	if (!drm->plane_resources) {
-		ALOGD("no planes found from drm resources");
-	} else {
-		unsigned int i, j;
-
-		ALOGD("supported drm planes and formats");
-		/* fill a helper structure for hwcomposer */
-		drm->planes = (struct gralloc_drm_plane_t *)
-		        calloc(drm->plane_resources->count_planes,
-			sizeof(struct gralloc_drm_plane_t));
-
-		for (i = 0; i < drm->plane_resources->count_planes; i++) {
-			drm->planes[i].drm_plane = drmModeGetPlane(drm->fd,
-				drm->plane_resources->planes[i]);
-
-			ALOGV("plane id %d", drm->planes[i].drm_plane->plane_id);
-			for (j = 0; j < drm->planes[i].drm_plane->count_formats; j++)
-				ALOGV("    format %c%c%c%c",
-					(drm->planes[i].drm_plane->formats[j]),
-					(drm->planes[i].drm_plane->formats[j])>>8,
-					(drm->planes[i].drm_plane->formats[j])>>16,
-					(drm->planes[i].drm_plane->formats[j])>>24);
-		}
-	}
-
 	/* find the crtc/connector/mode to use */
-	primary = fetch_connector(drm, DRM_MODE_CONNECTOR_HDMIA);
+	primary = fetch_connector(DRM_MODE_CONNECTOR_HDMIA);
 	if (primary) {
-		drm_kms_init_with_connector(drm, &drm->primary, primary);
+		init_with_connector(&primary_output, primary);
 		drmModeFreeConnector(primary);
-		drm->primary.active = 1;
+		primary_output.active = 1;
 	}
 
 	/* if still no connector, find first connected connector and try it */
 	int lastValidConnectorIndex = -1;
-	if (!drm->primary.active) {
+	if (!primary_output.active) {
 
-		for (i = 0; i < drm->resources->count_connectors; i++) {
+		for (i = 0; i < resources->count_connectors; i++) {
 			drmModeConnectorPtr connector;
 
-			connector = drmModeGetConnector(drm->fd,
-					drm->resources->connectors[i]);
+			connector = drmModeGetConnector(kms_fd,
+					resources->connectors[i]);
 			if (connector) {
 				lastValidConnectorIndex = i;
 				if (connector->connection == DRM_MODE_CONNECTED) {
-					if (!drm_kms_init_with_connector(drm,
-							&drm->primary, connector))
+					if (!init_with_connector(
+							&primary_output, connector))
 						break;
 				}
 
@@ -785,29 +613,29 @@ static int gralloc_drm_init_kms(struct gralloc_drm_t *drm)
 		}
 
 		/* if no connected connector found, try to enforce the use of the last valid one */
-		if (i == drm->resources->count_connectors) {
+		if (i == resources->count_connectors) {
 			if (lastValidConnectorIndex > -1) {
 				ALOGD("no connected connector found, enforcing the use of valid connector %d", lastValidConnectorIndex);
-				drmModeConnectorPtr connector = drmModeGetConnector(drm->fd, drm->resources->connectors[lastValidConnectorIndex]);
-				drm_kms_init_with_connector(drm, &drm->primary, connector);
+				drmModeConnectorPtr connector = drmModeGetConnector(kms_fd, resources->connectors[lastValidConnectorIndex]);
+				init_with_connector(&primary_output, connector);
 				drmModeFreeConnector(connector);
 			}
 			else {
 				ALOGE("failed to find a valid crtc/connector/mode combination");
-				drmModeFreeResources(drm->resources);
-				drm->resources = NULL;
+				drmModeFreeResources(resources);
+				resources = NULL;
 
 				return -EINVAL;
 			}
 		}
 	}
 
-	drm_kms_init_features(drm);
-	drm->first_post = 1;
+	init_features();
+	first_post = 1;
 	return 0;
 }
 
-static int hwc_init_kms(struct drm_module_t *mod) {
+int hwc_context::hwc_init(struct drm_module_t *mod) {
     int err = 0;
     pthread_mutex_lock(&mod->mutex);
     if (!mod->drm) {
@@ -815,15 +643,14 @@ static int hwc_init_kms(struct drm_module_t *mod) {
         if (!mod->drm)
             err = -EINVAL;
     }
-    if (!err)
-        err = gralloc_drm_init_kms(mod->drm);
+    if (!err) {
+    	kms_fd = mod->drm->fd;
+        err = init_kms();
+    }
     pthread_mutex_unlock(&mod->mutex);
 	return err;
 }
 
-#include "hwc_context.h"
-
-namespace android {
 
 hwc_context::hwc_context() {
     fps = 60.0;
@@ -832,16 +659,16 @@ hwc_context::hwc_context() {
     if (error) {
         ALOGE("Failed to get mModule %d", error);
     } else {
-        error = hwc_init_kms(mModule);
+        error = hwc_init(mModule);
         if (error != 0) {
             ALOGE("failed hwc_init_kms() %d", error);
         } else {
-            width = (uint32_t)mModule->drm->primary.mode.hdisplay;
-            height = (uint32_t)mModule->drm->primary.mode.vdisplay;
-            fps = (float)mModule->drm->primary.mode.vrefresh;
-            format = mModule->drm->primary.fb_format;
-            xdpi = (float)mModule->drm->primary.xdpi;
-            ydpi = (float)mModule->drm->primary.ydpi;
+            width = (uint32_t)primary_output.mode.hdisplay;
+            height = (uint32_t)primary_output.mode.vdisplay;
+            fps = (float)primary_output.mode.vrefresh;
+            format = primary_output.fb_format;
+            xdpi = (float)primary_output.xdpi;
+            ydpi = (float)primary_output.ydpi;
         }
     }
 }
@@ -855,7 +682,7 @@ int hwc_context::hwc_post(buffer_handle_t handle)
 	if (!bo)
 		return -EINVAL;
 
-	return gralloc_drm_bo_post(bo);
+	return bo_post(bo);
 }
 
 } // namespace anroid
